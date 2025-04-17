@@ -18,7 +18,7 @@ int pst_insert(int td, long key, char *buf, int size);
 int pst_update(int td, long key, char *buf, int size);
 int pst_delete(int td, long key);
 int pst_get(int td, long key, char *buf);
-int pst_findkeys(int td, long key1, long key2, int count, long *keys);
+int pst_findkeys(int td, long key1, long key2, int count, long keys[]);
 int pst_printerror();
 
 #endif
