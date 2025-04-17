@@ -68,7 +68,7 @@ int pst_get(int td, long key, char *buf)
     return (PST_ERROR);
 }
 
-int pst_findkeys(int td, long key1, long key2, int N, long keys)
+int pst_findkeys(int td, long key1, long key2, int N, long *keys)
 {
     return (PST_ERROR);
 }
