@@ -8,7 +8,7 @@
 #define PST_SUCCESS 0  // function execution success
 #define PST_ERROR  -1  // there is an error in the function execution.
 
-int pst_create(char *treename, int maxdatasize, int maxmem);
+int pst_create(char *treename, int memsize, int maxdatasize);
 int pst_destroy(char *treename);
 int pst_open(char *treename);
 int pst_close(int td);
