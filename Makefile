@@ -2,7 +2,7 @@
 CC	:= gcc
 CFLAGS := -g -Wall
 
-TARGETS :=  app1-add app1-get libpstree.a
+TARGETS :=  app1-add libpstree.a
 # Make sure that 'all' is the first target
 all: $(TARGETS)
 

@@ -31,10 +31,11 @@ typedef struct
 {
     size_t header_size; // The size of the shared header itself (for offset calculations)
     size_t sh_mem_size;
-    size_t first_free_block;// head of the free linked list
+    size_t free_list_head_offset;// head of the free linked list
+    size_t tree_head_offset;
     size_t maxdatasize;
-    pthread_mutex_t alloc_mtx;    // Mutex for synchronization of memory allocation
-    pthread_cond_t space_avail;   // Condition variable to wait for space availability
+    pthread_mutex_t allocation_lock;    // Mutex for synchronization of memory allocation
+    pthread_cond_t enough_space;   // Condition variable to wait for space availability
 } Header;
 
 
@@ -42,6 +43,7 @@ int pst_errorcode;  // global -  store the error code in this variable
 void *sh_memory_base; // it is the return value of mmap()
 static int tree_descriptor = 9;
 Header* header = NULL; // it will point to where sh_memor_abse will point
+char* tree_name;
 
 
 // Convert an offset to a pointer for the current process
@@ -55,95 +57,142 @@ static inline size_t ptr2off(void *p) {
 }
 
 size_t alloc_node(Header *hdr) {
-    pthread_mutex_lock(&hdr->alloc_mtx);  // Lock the allocation mutex
+    pthread_mutex_lock(&hdr->allocation_lock);  // Lock the allocation mutex
 
-    size_t prev_off = 0;
-    size_t cur_off = hdr->first_free_block;  // Start at the first free block
+    size_t cur_off = hdr->free_list_head_offset;  // Start at the first free block
+    printf("alloc node start \n");
 
-    FreeBlock *fb;
-    while (cur_off != 0) {
-        fb = off2ptr(cur_off);
-        if (fb->size >= sizeof(Node) + hdr->maxdatasize) {
-            break;  // Found a block large enough
-        }
-        prev_off = cur_off;
-        cur_off = fb->next_offset;
-    }
+    while(cur_off == 0) {
+        printf("alloc node second \n");
 
-    if (cur_off == 0) {
         // No space available, wait until there is space
-        pthread_cond_wait(&hdr->space_avail, &hdr->alloc_mtx);
+        pthread_cond_wait(&hdr->enough_space, &hdr->allocation_lock);
+        cur_off = hdr->free_list_head_offset;
     }
 
-    size_t new_node_off;
-    if (fb->size == sizeof(Node) + hdr->maxdatasize) {
-        // Perfect fit, remove it from the free list
-        if (prev_off) {
-            FreeBlock* prev_pointer = off2ptr(prev_off);
-            prev_pointer->next_offset = fb->next_offset;
-        } else {
-            hdr->first_free_block = fb->next_offset;
-        }
-        new_node_off = cur_off;
-    } else {
-        // Split the block, create a new node at the end of the current block
-        new_node_off = cur_off + (fb->size - (sizeof(Node) + hdr->maxdatasize));
-        fb->size -= (sizeof(Node) + hdr->maxdatasize);  // Shrink the free block
-    }
+    FreeBlock *fb = off2ptr(cur_off);
+    size_t next_offset = fb->next_offset;
+    printf("next offset is: %d\n", next_offset);
+    hdr->free_list_head_offset = next_offset; // advanced the free list head
 
-    // Allocate space for the node's data field and store the offset in the node
-    Node *node = off2ptr(new_node_off);  // Get the node at this offset
-    node->data_offset = new_node_off + sizeof(Node);  // Set the offset to the data
+    Node* newNode = off2ptr(cur_off);
+    newNode->left_child_offset = 0;
+    newNode->right_child_offset = 0;
+    newNode->actual_data_size = 0; // default value of 0
+    newNode->data_offset = cur_off + sizeof(Node);
+    // key is not set yet 
+    
+    pthread_mutex_unlock(&hdr->allocation_lock);  // Unlock the mutex
 
-    pthread_mutex_unlock(&hdr->alloc_mtx);  // Unlock the mutex
-
-    return new_node_off;
+    return cur_off; // offset of the newly allocated field (starting point)
 }
 
-// void free_node(Header *hdr, size_t free_offset){
-//     size_t NODE_SZ = sizeof(Node) + hdr->maxdatasize;
-
-//     size_t curr_offset = hdr->first_free_block;
-//     size_t prev_offset = 0;
-//     FreeBlock *fb;
-//     while(curr_offset != 0){
-//         fb = off2ptr(curr_offset);
-//         if(curr_offset + fb->size == free_offset) break;
-//         prev_offset = curr_offset;
-//         curr_offset = fb->next_offset;
-//     }
-//     if(curr_offset != 0){
-//         FreeBlock *prevFree = off2ptr(prev_offset);
-//         prevFree->size += NODE_SZ;
-//         if(prevFree->next_offset == prev_offset + NODE_SZ + prevFree->size){
-//             prevFree->next_offset = 
-//         }
-//     }
-// }
+void free_node(Header *hdr, long key, size_t free_offset){
+    size_t curr = hdr->tree_head_offset;
+    Node* node = off2ptr(curr);
+    while(node->key != key){
+        if(key > node->key){
+            curr = node->right_child_offset;
+        }
+        else{
+            curr = node->left_child_offset;
+        }
+        if(curr == 0){
+            return PST_ERROR;
+        }
+        node = off2ptr(curr);
+    }
+    // WE FOUND THE NODE TO BE DELETED WITH KEY = KEY
+    size_t old = hdr->free_list_head_offset;
+    hdr->free_list_head_offset = curr;
+    FreeBlock* newFree = off2ptr(curr);
+    newFree->next_offset = old;
+    newFree->size = sizeof(Node) + hdr->maxdatasize;
+    //NOTE THAT WE DID NOT CHANGE NODE'S NEXT CHILD IS GONNA BE HERE
+}
 
                  
 int pst_create(char *treename, int memsize, int maxdatasize)
 {
+    shm_unlink(treename);
+    tree_name = treename;
+
     int shm_fd = shm_open(treename, O_CREAT | O_RDWR, 0666);
     ftruncate(shm_fd,memsize); // set size of shared memory
     sh_memory_base = mmap(0,memsize, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
     if (sh_memory_base == MAP_FAILED) { printf("Map failed\n"); return -1; }
+
+    header = (Header*) sh_memory_base;
+    header->maxdatasize = maxdatasize;
+    header->sh_mem_size = memsize;
+    header->header_size = sizeof(Header);
+    header->free_list_head_offset = header->header_size;
+    header->tree_head_offset = 0; // it is the same offset with free_list_head initailly
+
+    
+    pthread_mutexattr_t mtxattr;
+    pthread_condattr_t  cndattr;
+
+    pthread_mutexattr_init(&mtxattr);
+    pthread_condattr_init(&cndattr);
+
+    pthread_mutexattr_setpshared(&mtxattr, PTHREAD_PROCESS_SHARED);
+    pthread_condattr_setpshared(&cndattr,  PTHREAD_PROCESS_SHARED);
+
+    pthread_mutex_init(&header->allocation_lock,  &mtxattr);
+    pthread_cond_init( &header->enough_space, &cndattr);
+
+    size_t NODE_ALLOCATION_SIZE = sizeof(Node) + maxdatasize;
+    int freenode_alloc_number = (memsize - header->header_size)/NODE_ALLOCATION_SIZE;
+
+    FreeBlock* currentFree;
+    size_t currentoff = header->free_list_head_offset;
+    for (int i = 0; i < freenode_alloc_number; i++)
+    {
+        currentFree = off2ptr(currentoff); 
+        currentFree->size = NODE_ALLOCATION_SIZE;
+        if (i + 1 < freenode_alloc_number) {
+            currentFree->next_offset = currentoff + NODE_ALLOCATION_SIZE;
+        } 
+        else {
+            currentFree->next_offset = 0; // last offset is 0
+        }
+        currentoff += NODE_ALLOCATION_SIZE;
+    }
 
     return (PST_SUCCESS);
 }
                  
 int pst_destroy(char *treename)
 {
+
     return (PST_SUCCESS);
 }
 
 int pst_open(char *treename)
 {
-    return (PST_SUCCESS);
+    int shm_fd = shm_open(treename, O_RDWR, 0666);
+    if(shm_fd < 0) {
+        perror("shm_open");
+        return PST_ERROR;
+    }
+
+    sh_memory_base = mmap(0, header->sh_mem_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    if (sh_memory_base == MAP_FAILED) {
+        perror("mmap");
+        pst_close(shm_fd);
+        return PST_ERROR;  // Failed to map shared memory
+    }
+    header = (Header*)sh_memory_base;  // Set up the header pointer
+    return (tree_descriptor);
 }
 
 int pst_close(int td)
 {
+    if(td != tree_descriptor) 
+        return PST_ERROR;
+    int shm_fd = shm_open(tree_name, O_RDWR, 0666);
+    close(shm_fd);
     return (PST_SUCCESS);
 }
 
@@ -151,17 +200,95 @@ int pst_get_maxdatasize(int td)
 {
     if(td != tree_descriptor)
         return PST_ERROR;
-    return header.maxdatasize;
+    return header->maxdatasize;
 }
 
 int pst_get_nodecount (int td)
 {
-    return (PST_SUCCESS);
+    int nodecount = 0;
+    if(td != tree_descriptor)
+        return PST_ERROR;
+
+    size_t curr = header->tree_head_offset;
+    nodecount = recur_node_count(curr);
+    return (nodecount);
+}
+
+int recur_node_count(size_t head_offset){
+    if(head_offset == 0)
+        return 0;
+    
+    Node* node = (Node*)off2ptr(head_offset);
+    int left_child = 0; 
+    int right_child = 0;
+    if(node->left_child_offset != 0)
+        left_child =  recur_node_count(node->left_child_offset);
+
+    if(node->right_child_offset != 0)
+        right_child = recur_node_count(node->right_child_offset);
+    return 1 + left_child + right_child;
 }
 
 
 int pst_insert(int td, long key, char *buf, int size)
 {
+    if(td != tree_descriptor)
+        return PST_ERROR;
+
+    size_t curr = header->tree_head_offset;
+    size_t parent = curr;
+    Node* currnode;
+    int first = 0;
+    if(header->tree_head_offset == 0){// first insertion
+        first = 1;
+    }
+    while(!first && curr != 0){
+        currnode = (Node*)off2ptr(curr);
+        parent = curr;
+        if(key > currnode->key){
+            printf("right child \n");
+            printf("key : %d ", currnode->key);
+            curr = currnode->right_child_offset;
+        }
+        else if(key == currnode->key){
+            return PST_ERROR;
+        }
+        else{
+            printf("left child \n");
+            printf("key : %d ", currnode->key);
+            curr = currnode->left_child_offset;
+        }
+    }
+    printf("\n");
+    //we found where to insert 
+    size_t new_offset;
+    if(first){
+        printf("first insertion \n");
+        header->tree_head_offset = alloc_node(header);
+        new_offset = header->tree_head_offset;
+    }
+    else{
+        printf("second insertion \n");
+        new_offset = alloc_node(header);
+        printf("alloc node sonrasi \n");
+
+        Node* parent_node = (Node*)off2ptr(parent);
+        if(key > parent_node->key){
+            printf("(right child)inserted key: %d", key);
+            parent_node->right_child_offset = new_offset;
+        }
+        else{
+            printf("(left child)inserted key: %d", key);
+            parent_node->left_child_offset = new_offset;
+        }
+    }
+    Node* insertedNode = (Node*)off2ptr(new_offset);
+    insertedNode->actual_data_size = size;
+    insertedNode->key = key;
+    insertedNode->data_offset = ptr2off(buf);
+    insertedNode->left_child_offset = 0;
+    insertedNode->right_child_offset = 0;
+    
     return (PST_SUCCESS);
 }
 
