@@ -4,20 +4,17 @@
 #include <malloc.h>
 #include <assert.h>
 #include "pstree.h"
+#include <pthread.h>   /* pthread_create, vs. */
 
-/*
-    You will implement your library in this file. You can define your internal structures, macros here (such as: #define ..). You can also define and use global variables here. You can define and use additional functions (as many as you wish) in this file; besides the pst library functions desribed in the assignment. These additional functions will not be available for applications directly.
- 
-    You should not change the pstree.h header file. 
- */
+#include <fcntl.h>
+#include <sys/shm.h>
+#include <sys/mman.h>
+#include <sys/types.h>
 
-int pst_errorcode;  // global -  store the error code in this variable
-void *sh_memory_base; // it is the return value of mmap()
-static int tree_descriptor = 9;
 
 typedef struct
 {
-    long int key;
+    long key;
     size_t actual_data_size; //stores the size of the actual data
     size_t data_offset; // start address of the actual data stores
     size_t left_child_offset;
@@ -39,6 +36,12 @@ typedef struct
     pthread_mutex_t alloc_mtx;    // Mutex for synchronization of memory allocation
     pthread_cond_t space_avail;   // Condition variable to wait for space availability
 } Header;
+
+
+int pst_errorcode;  // global -  store the error code in this variable
+void *sh_memory_base; // it is the return value of mmap()
+static int tree_descriptor = 9;
+Header* header = NULL; // it will point to where sh_memor_abse will point
 
 
 // Convert an offset to a pointer for the current process
@@ -121,6 +124,11 @@ size_t alloc_node(Header *hdr) {
                  
 int pst_create(char *treename, int memsize, int maxdatasize)
 {
+    int shm_fd = shm_open(treename, O_CREAT | O_RDWR, 0666);
+    ftruncate(shm_fd,memsize); // set size of shared memory
+    sh_memory_base = mmap(0,memsize, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    if (sh_memory_base == MAP_FAILED) { printf("Map failed\n"); return -1; }
+
     return (PST_SUCCESS);
 }
                  
@@ -139,12 +147,14 @@ int pst_close(int td)
     return (PST_SUCCESS);
 }
 
-int pst_get_maxdatasize(int tid)
+int pst_get_maxdatasize(int td)
 {
-    return (PST_SUCCESS);
+    if(td != tree_descriptor)
+        return PST_ERROR;
+    return header.maxdatasize;
 }
 
-int pst_get_nodecount (int tid)
+int pst_get_nodecount (int td)
 {
     return (PST_SUCCESS);
 }
