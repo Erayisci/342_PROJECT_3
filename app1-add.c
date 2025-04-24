@@ -27,9 +27,9 @@ main(int argc, char **argv)
         key = i + 1;
         sprintf (data, "data%d", i + 1);
         pst_insert (td, key, data, strlen(data)+1);
-        printf ("added data\n");
+        //printf ("added data\n");
     }
-    
+    inorder_traversal();
     pst_close(td);
     
 	return 0;

@@ -318,3 +318,25 @@ int pst_printerror()
 {
     return (PST_SUCCESS);
 }
+
+void helper_traversal(size_t head){
+    if(head == 0){
+        return;
+    }
+
+    size_t curr = head;
+    Node* currnode = off2ptr(curr);
+    size_t left = currnode->left_child_offset;
+    size_t right = currnode->right_child_offset;
+
+    helper_traversal(left);
+    char* data = off2ptr(currnode->data_offset);
+    printf("%s\n",data);
+    helper_traversal(right);
+    
+}
+
+void inorder_traversal(){
+    size_t curr = header->tree_head_offset;
+    helper_traversal(curr);
+}
