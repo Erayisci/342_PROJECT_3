@@ -246,16 +246,12 @@ int pst_insert(int td, long key, char *buf, int size)
         currnode = (Node*)off2ptr(curr);
         parent = curr;
         if(key > currnode->key){
-            printf("right child \n");
-            printf("key : %d ", currnode->key);
             curr = currnode->right_child_offset;
         }
         else if(key == currnode->key){
             return PST_ERROR;
         }
         else{
-            printf("left child \n");
-            printf("key : %d ", currnode->key);
             curr = currnode->left_child_offset;
         }
     }
@@ -263,31 +259,30 @@ int pst_insert(int td, long key, char *buf, int size)
     //we found where to insert 
     size_t new_offset;
     if(first){
-        printf("first insertion \n");
         header->tree_head_offset = alloc_node(header);
         new_offset = header->tree_head_offset;
     }
     else{
-        printf("second insertion \n");
         new_offset = alloc_node(header);
-        printf("alloc node sonrasi \n");
 
         Node* parent_node = (Node*)off2ptr(parent);
         if(key > parent_node->key){
-            printf("(right child)inserted key: %d", key);
             parent_node->right_child_offset = new_offset;
         }
         else{
-            printf("(left child)inserted key: %d", key);
             parent_node->left_child_offset = new_offset;
         }
     }
+    
     Node* insertedNode = (Node*)off2ptr(new_offset);
     insertedNode->actual_data_size = size;
     insertedNode->key = key;
-    insertedNode->data_offset = ptr2off(buf);
+   
     insertedNode->left_child_offset = 0;
     insertedNode->right_child_offset = 0;
+
+    char *shared_data = (char*)off2ptr(new_offset + sizeof(Node));
+    memcpy(shared_data, buf, size);
     
     return (PST_SUCCESS);
 }
@@ -295,24 +290,143 @@ int pst_insert(int td, long key, char *buf, int size)
 
 int pst_update(int td, long key, char *buf, int size)
 {
-return (PST_SUCCESS);
+    return (PST_SUCCESS);
 }
-
 
 int pst_delete(int td, long key)
 {
-    return (PST_ERROR);
+    if (td != tree_descriptor)
+        return PST_ERROR;
+
+    /* 1. Find the node-to-delete (curr) and its parent */
+    size_t curr_off   = header->tree_head_offset;
+    size_t parent_off = 0;
+    Node  *curr       = NULL;
+    Node  *parent     = NULL;
+
+    while (curr_off != 0) {
+        curr = (Node*)off2ptr(curr_off);
+        if (key < curr->key) {
+            parent_off = curr_off;
+            parent     = curr;
+            curr_off   = curr->left_child_offset;
+        }
+        else if (key > curr->key) {
+            parent_off = curr_off;
+            parent     = curr;
+            curr_off   = curr->right_child_offset;
+        }
+        else {
+            break;  /* found it */
+        }
+    }
+    if (curr_off == 0)
+        return PST_ERROR;  /* key not found */
+
+    /* 2. If two children, swap with in-order successor */
+    if (curr->left_child_offset && curr->right_child_offset) {
+        /* locate successor and its parent */
+        size_t succ_off        = curr->right_child_offset;
+        size_t succ_parent_off = curr_off;
+        Node  *succ_parent     = curr;
+        Node  *succ            = (Node*)off2ptr(succ_off);
+
+        while (succ->left_child_offset != 0) {
+            succ_parent_off = succ_off;
+            succ_parent     = succ;
+            succ_off        = succ->left_child_offset;
+            succ            = (Node*)off2ptr(succ_off);
+        }
+
+        /* swap key */
+        long tmp_key    = curr->key;
+        curr->key       = succ->key;
+        succ->key       = tmp_key;
+
+        /* swap actual_data_size */
+        size_t tmp_sz               = curr->actual_data_size;
+        curr->actual_data_size      = succ->actual_data_size;
+        succ->actual_data_size      = tmp_sz;
+
+        /* swap data_offset */
+        size_t tmp_off              = curr->data_offset;
+        curr->data_offset           = succ->data_offset;
+        succ->data_offset           = tmp_off;
+
+        /* now delete the successor instead */
+        parent     = succ_parent;
+        parent_off = succ_parent_off;
+        curr       = succ;
+        curr_off   = succ_off;
+    }
+
+    /* 3. Splice out curr (which now has ≤ 1 child) */
+    size_t child_off = curr->left_child_offset
+                     ? curr->left_child_offset
+                     : curr->right_child_offset;
+
+    if (parent == NULL) {
+        /* deleting the root */
+        header->tree_head_offset = child_off;
+    }
+    else if (parent->left_child_offset == curr_off) {
+        parent->left_child_offset = child_off;
+    }
+    else {
+        parent->right_child_offset = child_off;
+    }
+
+    /* 4. Free the node’s block */
+    free_node(header, curr->key, curr_off);
+    return PST_SUCCESS;
 }
+
 
 int pst_get(int td, long key, char *buf)
 {
+    if (td != tree_descriptor)
+        return PST_ERROR;
+    
+    size_t curr = header->tree_head_offset;
+    Node* currnode;
+    while(curr != 0){
+        currnode = off2ptr(curr);
+        if(currnode->key == key){
+            char* our_data = (char *)off2ptr(currnode->data_offset);
+            memcpy(buf, our_data, currnode->actual_data_size);
+            return currnode->actual_data_size;
+        }
+        if(key < currnode->key){
+            curr = currnode->left_child_offset;
+        }
+        else{
+            curr = currnode->right_child_offset;
+        }
+    }
+    //couldnt find so error
     return (PST_ERROR);
 }
 
 int pst_findkeys(int td, long key1, long key2, int N, long keys[])
 {
+    if (td != tree_descriptor)
+        return PST_ERROR;
+    
+    size_t curr = header->tree_head_offset;
+    Node* currnode;
+    while(curr != 0){
+        currnode = off2ptr(curr);
+        
+        if(currnode->key <= key1){
+            curr = currnode->right_child_offset;
+        }
+        if(currnode->key >= key2){
+            curr = currnode->left_child_offset;
+        }
+    }
     return (PST_ERROR);
 }
+
 
 int pst_printerror()
 {
@@ -333,7 +447,6 @@ void helper_traversal(size_t head){
     char* data = off2ptr(currnode->data_offset);
     printf("%s\n",data);
     helper_traversal(right);
-    
 }
 
 void inorder_traversal(){
