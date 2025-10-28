@@ -1,7 +1,5 @@
 # User-Space Thread Library (TSL)
-**Course:** CS342 – Operating Systems (Spring 2025)  
-**Institution:** Bilkent University  
-**Project:** #2 – User-Level Thread Library (64-bit)  
+**Project:** – User-Level Thread Library (64-bit)  
 **Author:** Eray İşçi | Kemal Onur Özkan
 
 ---
